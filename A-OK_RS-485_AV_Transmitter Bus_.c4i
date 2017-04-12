@@ -1,0 +1,294 @@
+<devicedata>
+    <copyright>Copyright 2015 Russell Groves. All rights reserved.</copyright>
+    <creator>Russell Groves</creator>
+    <manufacturer>Russell Groves</manufacturer>
+    <name>A-OK RS-485 AV Transmitter Bus</name>
+    <created>05/29/2015 1:21 PM</created>
+    <modified>12/08/2015 9:35 AM</modified>
+    <version>3</version>
+    <small>devices_sm\c4.gif</small>
+    <large>devices_lg\c4.gif</large>
+    <control>lua_gen</control>
+    <controlmethod>serial</controlmethod>
+    <driver>DriverWorks</driver>
+    <states />
+    <combo>True</combo>
+    <OnlineCategory>others</OnlineCategory>
+    <proxies qty="1">
+        <proxy>
+        </proxy>
+    </proxies>
+    <connections>
+        <connection>
+            <id>1</id>
+            <facing>6</facing>
+            <connectionname>A-OK RS-485 AV Transmitter Bus</connectionname>
+            <type>1</type>
+            <consumer>False</consumer>
+            <audiosource>False</audiosource>
+            <videosource>False</videosource>
+            <linelevel>True</linelevel>
+            <classes>
+                <class>
+                    <classname>AVT_PROXY</classname>
+                </class>
+            </classes>
+        </connection>
+        <connection>
+            <id>100</id>
+            <facing>6</facing>
+            <connectionname>Serial RS-232</connectionname>
+            <type>1</type>
+            <consumer>True</consumer>
+            <audiosource>False</audiosource>
+            <videosource>False</videosource>
+            <linelevel>False</linelevel>
+            <classes>
+                <class>
+                    <classname>RS_232</classname>
+                </class>
+            </classes>
+        </connection>
+        <connection>
+            <id>5000</id>
+            <facing>6</facing>
+            <connectionname>A-OK_AV_RS485_TRANSMITTER_BUS</connectionname>
+            <type>2</type>
+            <consumer>False</consumer>
+            <audiosource>False</audiosource>
+            <videosource>False</videosource>
+            <linelevel>False</linelevel>
+            <classes>
+                <class>
+                    <classname>
+                    </classname>
+                </class>
+            </classes>
+        </connection>
+    </connections>
+    <config>
+        <power_management_method>AlwaysOn</power_management_method>
+        <power_command_delay>0</power_command_delay>
+        <power_delay>0</power_delay>
+        <power_command_needed>False</power_command_needed>
+        <serialsettings>2400 8 none 1 none </serialsettings>
+        <documentation>This driver is intended to be used in conjunction with the "A-OK Curtain and Blind Motor" driver.
+
+This driver acts as a serial bus and has two available connections. Input should go to the serial output of your controller and output should go to each one of your motor drivers. Reminder: You can only have one device bound to a single serial output but you may have any amount of motor drivers bound to this drivers output.
+
+It is recommended that you drop this driver into your project first before adding the motor driver so that each motor driver auto binds itself to this driver.
+
+Once you have your bindings setup, there is no further configuration required for this driver.
+
+This driver is provided without warranty or support.</documentation>
+        <script><![CDATA[
+-- Debug function that only prints to Lua output window if Debugging is enabled
+function Dbg(msg1, msg2)
+	if (debugging == true) then
+		if (msg2 ~= nil) then
+			print(msg1, msg2)
+		else
+			print(msg1)
+		end
+	end
+end
+
+function trial_license()
+	trial = true
+	time_limit = 259200
+	end_time = os.time() + time_limit
+	trial_timer = C4:AddTimer(time_limit, "SECONDS", false)
+	trial_timer_updater = C4:AddTimer(1, "HOURS", true)
+	C4:UpdateProperty("Authentication Code", "TRIAL")
+	C4:UpdateProperty("Authentication Status", "Time remaining: " .. (end_time - os.time())/(60*60) .. " hours")
+end
+
+
+function authCodeCheck()
+	local code = ""
+	local directorMAC = C4:GetUniqueMAC()
+	local y = <redacted> -- secret code (Put a 12 character alphanumerical string here)
+	local pos = 12
+
+	while (pos > 1) do
+		code = code .. bit.bxor(string.byte(string.sub(directorMAC,pos,pos)),string.byte(string.sub(y,pos,pos)))
+		pos = pos - 1
+	end
+
+	-- jumble things up
+	code = string.format("%X", string.sub(code, 10,-10)) .. string.format("%X", string.sub(code, -9)) -- The remainder of this function was removed to keep the process secret
+
+	-- test the entered code with this code
+	if (Properties["Authentication Code"] == code) then
+		--good to go
+		authed = true
+    if (trial_timer ~= nil) then
+		    trial_timer = C4:KillTimer(trial_timer)
+        Dbg("Killing trial timer")
+    end
+    if (trial_timer_updater ~= nil) then
+		    trial_timer_updater = C4:KillTimer(trial_timer_updater)
+        trial_timer = C4:KillTimer(trial_timer)
+		    Dbg("Killing trial timer updater")
+    end
+		C4:UpdateProperty("Authentication Status", "Authorised")
+		PersistData["AOK_bus"] = "registered"
+		PersistData["AOK_code"] = code
+		Dbg("Authorised")
+	else
+		--incorrect key
+		authed = false
+		C4:UpdateProperty("Authentication Status", "Incorrect Key")
+		PersistData["AOK_bus"] = "unregistered"
+		Dbg("Incorrect Authentication Key")
+	end
+end
+
+-- Check the MAC address of the main controller and compare it to a hard-coded value to see if the user is allowed to use this driver.
+function OnDriverInit()
+	debugging = false
+	debug_timer = 0
+	authed = false
+	authCodeCheck()
+	C4:UpdateProperty("Controller MAC Address", C4:GetUniqueMAC())
+	if (PersistData["AOK_bus"] == nil) then
+		PersistData["AOK_bus"] = "unregistered"
+		trial_license()
+	elseif (PersistData["AOK_bus"] == "unregistered") then
+		trial_license()
+	elseif (PersistData["AOK_bus"] == "registered") then
+		authed = true
+		C4:UpdateProperty("Authentication Status", "Authorised")
+		C4:UpdateProperty("Authentication Code", PersistData["AOK_code"])
+		Dbg("Authorised")
+	end
+end
+
+inter_command_delay = tonumber(Properties["Inter-Command Delay (ms)"])
+g_CommandDelayTimer = 0
+
+-- When the Debug or Inter-Command Delay property is changed, make sure to store the new value.
+function OnPropertyChanged(strProperty)
+	if (strProperty == "Authentication Code") then
+		Dbg("Checking new auth code")
+		authCodeCheck()
+	end
+
+	if (strProperty == "Debug") then
+		if (Properties["Debug"] == "On") then
+			debugging = true
+			Dbg("Debugging: On")
+			debug_timer = C4:AddTimer(10, "MINUTES", false)
+			Dbg("Debugging will automatically turn off after 10 minutes to preserve resources.")
+		elseif (Properties["Debug"] == "Off") then
+			Dbg("Debugging: Off")
+			debugging = false
+		end
+	end
+
+	if (strProperty == "Inter-Command Delay (ms)") then
+		inter_command_delay = tonumber(Properties["Inter-Command Delay (ms)"])
+	end
+end
+
+-- String formatting that converts from decimal to hexadecimal
+-- in the format 0x0A. Uppercase letters with left side zero-padding.
+function Dec2Hex(s)
+	s = string.format("%02X", s)
+	return s
+end
+
+-- Received commands go into this table then removed when they are sent.
+CommandTable = {}
+
+-- Gets data sent to the proxy
+function ReceivedFromProxy(idBinding, strCommand, tParams)
+	if (authed or trial) then
+		Dbg("Received command: " .. strCommand)
+		-- Builds the packet
+		packet = Dec2Hex(tParams["head_code"]) .. " " .. Dec2Hex(tParams["id_code"]) .. " " .. Dec2Hex(tParams["low_chan"]) .. " " .. Dec2Hex(tParams["high_chan"]) .. " " .. Dec2Hex(tParams["comm_type"]) .. " " .. Dec2Hex(tParams["command"]) .. " " .. Dec2Hex(tParams["verify"])
+		--Dbg("Packet: " .. packet)
+		g_CommandDelayTimer = C4:AddTimer(inter_command_delay, "MILLISECONDS", false)
+		table.insert(CommandTable, packet)
+	else
+		Dbg("Not authorised and/or trial expired")
+	end
+end
+
+-- When a timer expires, if it is the command delay timer then
+-- remove the command we want to send from the command table
+-- and send it over serial.
+function OnTimerExpired(idTimer)
+	if (idTimer == g_CommandDelayTimer) then
+		packet = table.remove(CommandTable,1)
+		if packet ~= nil then
+			C4:SendToSerial(100, tohex(packet))
+			-- This shouldn't be here?
+			g_CommandDelayTimer = C4:AddTimer(inter_command_delay, "MILLISECONDS", false)
+		end
+	end
+
+	if (idTimer == debug_timer) then
+		Dbg("Debug timer expired: Turning off")
+		debugging = false
+		C4:UpdateProperty("Debug", "Off")
+	end
+
+	if (idTimer == trial_timer) then
+		Dbg("Trial license has expired")
+		trial = false
+		C4:UpdateProperty("Authentication Code", "TRIAL")
+		C4:UpdateProperty("Authentication Status", "Trial Expired")
+		trial_timer = C4:KillTimer(trial_timer)
+		Dbg("Killing trial timer")
+		trial_timer_updater = C4:KillTimer(trial_timer_updater)
+		Dbg("Killing trial timer updater")
+	end
+
+	if (idTimer == trial_timer_updater) then
+		Dbg("Updating trial time remaining")
+		C4:UpdateProperty("Authentication Code", "TRIAL")
+		C4:UpdateProperty("Authentication Status", "Time remaining: " .. (end_time - os.time())/(60*60) .. " hours")
+	end
+end
+]]></script>
+        <properties>
+            <property>
+                <name>Controller MAC Address</name>
+                <type>STRING</type>
+                <readonly>true</readonly>
+                <default />
+            </property>
+            <property>
+                <name>Authentication Code</name>
+                <type>STRING</type>
+                <readonly>false</readonly>
+                <default />
+            </property>
+            <property>
+                <name>Authentication Status</name>
+                <type>STRING</type>
+                <readonly>true</readonly>
+                <default>Not Authenticated</default>
+            </property>
+            <property>
+                <name>Inter-Command Delay (ms)</name>
+                <type>RANGED_INTEGER</type>
+                <readonly>false</readonly>
+                <default>500</default>
+                <minimum>500</minimum>
+                <maximum>2000</maximum>
+            </property>
+            <property>
+                <name>Debug</name>
+                <type>LIST</type>
+                <readonly>false</readonly>
+                <default>Off</default>
+                <items>
+                    <item>Off</item>
+                    <item>On</item>
+                </items>
+            </property>
+        </properties>
+    </config>
+</devicedata>

@@ -1,0 +1,407 @@
+<devicedata>
+    <copyright>Copyright 2015 Russell Groves. All rights reserved.</copyright>
+    <creator>Russell Groves</creator>
+    <manufacturer>Russell Groves</manufacturer>
+    <name>A-OK Curtain and Blind Motor</name>
+    <created>05/29/2015 1:18 PM</created>
+    <modified>07/28/2015 4:45 PM</modified>
+    <version>2</version>
+    <small>devices_sm\blinds.gif</small>
+    <large>devices_lg\blinds.gif</large>
+    <control>lua_gen</control>
+    <controlmethod>relay</controlmethod>
+    <driver>DriverWorks</driver>
+    <states />
+    <proxies qty="1">
+        <proxy>blind</proxy>
+    </proxies>
+    <capabilities>
+        <can_stop>True</can_stop>
+    </capabilities>
+    <connections>
+        <connection>
+            <id>1</id>
+            <facing>6</facing>
+            <connectionname>A-OK Curtain and Blind Motor</connectionname>
+            <type>1</type>
+            <consumer>True</consumer>
+            <audiosource>False</audiosource>
+            <videosource>False</videosource>
+            <linelevel>True</linelevel>
+            <classes>
+                <class>
+                    <classname>AOK_PROXY</classname>
+                    <autobind>True</autobind>
+                </class>
+            </classes>
+        </connection>
+        <connection>
+            <id>5001</id>
+            <facing>6</facing>
+            <connectionname>Blind</connectionname>
+            <type>2</type>
+            <consumer>False</consumer>
+            <audiosource>False</audiosource>
+            <videosource>False</videosource>
+            <linelevel>False</linelevel>
+            <classes>
+                <class>
+                    <classname>BLIND</classname>
+                </class>
+            </classes>
+        </connection>
+    </connections>
+    <config>
+        <power_management_method>AlwaysOn</power_management_method>
+        <power_command_delay>0</power_command_delay>
+        <power_delay>0</power_delay>
+        <power_command_needed>False</power_command_needed>
+        <documentation>This driver is intended to be used in conjunction with the "A-OK RS-485 AV Transmitter Bus" driver.
+
+This driver only has one input under Connections which should be bound to the Bus driver.
+
+It is recommended that you drop the "A-OK RS-485 AV Transmitter Bus" driver into your project first before adding this motor driver so that it can auto bind itself to the Bus driver.
+
+This driver is provided without warranty or support.</documentation>
+        <script><![CDATA[-- Debug function that only prints to Lua output window if Debugging is enabled
+function Dbg(msg1, msg2)
+	if (debugging == true) then
+		if (msg2 ~= nil) then
+			print(msg1, msg2)
+		else
+			print(msg1)
+		end
+	end
+end
+
+tTimer = ""
+
+function OnDriverInit()
+	debugging = false
+	debug_timer = 0
+	C4:UpdateProperty("Controller MAC Address", C4:GetUniqueMAC())
+end
+
+function OnDriverLateInit()
+	authCodeCheck()
+	C4:UpdateProperty("Controller MAC Address", C4:GetUniqueMAC())
+end
+
+-- The data required, visually in the order that it needs to be sent.
+-- All values stay as integers until being sent by the Bus driver.
+packet = {
+	["head_code"] = 154,
+	["id_code"] = 1,
+	["low_chan"] = 1,
+	["high_chan"] = 0,
+	["comm_type"] = 10,
+	["command"] = 0,
+	["verify"] = 0
+}
+
+-- Takes the channel required and splits the value between a low and high channel.
+-- Eg. Channel 8 = low: 8, high: 0. Channel 10 = low: 0, high: 2
+function splitchan(n)
+	if (n >= 1 and n <= 8) then
+		packet["low_chan"] = 2^(n - 1)
+		packet["high_chan"] = 0
+	elseif (n > 8 and n <= 16) then
+		packet["low_chan"] = 0
+		packet["high_chan"] = 2^((n - 8) - 1)
+	else
+		packet["low_chan"] = 255
+		packet["high_chan"] = 255
+	end
+end
+
+-- Takes 5 codes (id_code/low_chan/high_chan/comm_type/command) and
+-- performs the bitwise operator xor on them to get a verify code
+-- and then sends the result to the proxy (the 'Bus' driver).
+function verify_and_send(strCommand, packet)
+	function make_verify(packet)
+		return bit.bxor(packet["id_code"], packet["high_chan"], packet["low_chan"], packet["comm_type"], packet["command"])
+	end
+	-- If House Control is off then proceed as usual.
+	if (Properties["House Control"] == "Off") then
+		packet["verify"] = make_verify(packet)
+		C4:SendToProxy(1, strCommand, packet, "COMMAND")
+		Dbg("Sending command: " .. strCommand)
+		--[[
+		Dbg("Sending strCommand to Proxy: " .. strCommand)
+		for n, v in pairs(packet) do
+			Dbg(n, v)
+		end
+		--]]
+	else
+		-- If House Control is on then we need to keep both the high and low
+		-- channel codes on 255 (0xFF) and send the command to each Room (ID).
+		if (Properties["Control Type"] == "RS-485") then
+			Dbg("Doing whole House Control")
+			packet["id_code"] = 0
+			packet["verify"] = make_verify(packet)
+			C4:SendToProxy(1, strCommand, packet, "COMMAND")
+		else
+			Dbg("Doing House Control for ", Properties["Number of Rooms"], "Rooms:")
+			-- We assume installers will number their rooms sequentially so if they
+			-- tell the driver they have 10 rooms then it's safe to loop from 1 to 10.
+			for i = 1, tonumber(Properties["Number of Rooms"]) do
+				packet["id_code"] = i
+				-- We give splitchan() zero so that it'll set low_chan and high_chan to 255.
+				splitchan(0)
+				packet["verify"] = make_verify(packet)
+				C4:SendToProxy(1, strCommand, packet, "COMMAND")
+				Dbg("Command sent to Room:", i)
+			end
+		end
+	end
+end
+
+-- When the installer changes values on the properties tab the values being stored
+-- in the driver need to be updated to reflect the changes.
+function OnPropertyChanged(strProperty)
+	if (strProperty == "ID") then
+		packet["id_code"] = tonumber(Properties["ID"])
+	end
+
+	if (strProperty == "Channel") then
+		splitchan(tonumber(Properties["Channel"]))
+	end
+
+	-- If House Control is on and the Control Type is "A-OK AVT" then change ID to 1 and Channel to 0.
+	-- If House Control is on and the Control Type is RS-485 then change both ID and Channel to 0.
+	if (strProperty == "House Control" or strProperty == "Control Type") then
+		if (Properties["House Control"] == "On") then
+			if (Properties["Control Type"] == "A-OK AVT") then
+				C4:UpdateProperty("ID", 1)
+				C4:UpdateProperty("Channel", 0)
+			elseif (Properties["Control Type"] == "RS-485") then
+				C4:UpateProperty("ID", 0)
+				C4:UpdateProperty("Channel", 0)
+			end
+		end
+	end
+
+	if(strProperty == "Blind Open or Close Time (s)") then
+		g_toggletimer = C4:AddTimer(Properties["Blind Open or Close Time (s)"], "SECONDS", false)
+		tTimer = "TS"
+	end
+
+	if (strProperty == "Debug") then
+		if (Properties["Debug"] == "On") then
+			debugging = true
+			Dbg("Debugging: On")
+			debug_timer = C4:AddTimer(10, "MINUTES", false)
+			Dbg("Debugging will automatically turn off after 10 minutes to preserve resources.")
+		elseif (Properties["Debug"] == "Off") then
+			Dbg("Debugging: Off")
+			debugging = false
+		end
+	end
+end
+
+-- This sends commands when the buttons in the Actions tab is being pressed.
+function ExecuteCommand(strCommand, tParams)
+	if (strCommand == "Command Name") then
+	end
+
+	if (strCommand == "LUA_ACTION") then
+		--if (tParams ~= nil) then
+			--for cmd, cmdv in pairs(tParams) do
+		tParams = tParams or {}
+		local action = tParams.ACTION or ""
+		if (action == "LEARN") then
+			-- If the installer/operator is using the A-OK AVT to control
+			-- the motors then the "Learn" command is actually the
+			-- "Up" command. If they are using RS-485 then "Learn"
+			-- has it's own command.
+			if (Properties["Control Type"] == "A-OK AVT") then
+				packet["command"] = 221
+			elseif (Properties["Control Type"] == "RS-485") then
+				packet["command"] = 170
+			end
+			strCommand = "LEARN"
+		elseif (action == "DELETE") then
+			packet["command"] = 166
+			strCommand = "DELETE"
+		elseif (action == "STOP") then
+			packet["command"] = 204
+			strCommand = "STOP"
+		elseif (action == "UP") then
+			packet["command"] = 221
+			strCommand = "UP"
+		elseif (action == "DOWN") then
+			packet["command"] = 238
+			strCommand = "DOWN"
+		end
+	end
+	verify_and_send(strCommand, packet)
+end
+
+function ReceivedFromProxy(idBinding, strCommand, tParams)
+	-- Keeps track of what the last command is so that the
+	-- toggle functionality works correctly.
+	if idBinding == 5001 then
+		if strCommand == "TOGGLE" then
+			if tLastCommand == "UP" then
+				if tTimer == "TS" then
+					strCommand = "STOP"
+				else
+					strCommand = "DOWN"
+				end
+			elseif tLastCommand == "DOWN" then
+				if tTimer == "TS" then
+					strCommand = "STOP"
+				else
+					strCommand = "UP"
+				end
+			elseif tLastCommand == "STOP" then
+				if tUpOrDown == "U" then
+					strCommand = "DOWN"
+				else
+					strCommand = "UP"
+				end
+			end
+		end
+		if strCommand == "UP" then
+			strState = "UP"
+			tLastCommand = "UP"
+			tUpOrDown = "U"
+		end
+		if strCommand == "DOWN" then
+			strState = "DOWN"
+			tLastCommand = "DOWN"
+			tUpOrDown = "D"
+		end
+		if strCommand == "STOP" then
+			strState = "STOP"
+			tLastCommand = "STOP"
+		end
+	end
+
+	if (strCommand == "STOP") then
+		packet["command"] = 204
+	elseif (strCommand == "UP") then
+		packet["command"] = 221
+	elseif (strCommand == "DOWN") then
+		packet["command"] = 238
+	end
+
+	verify_and_send(strCommand, packet)
+
+	g_toggleTimer = C4:AddTimer(Properties["Blind Open or Close Time (s)"], "SECONDS", false)
+	tTimer = "TS"
+end
+
+function OnTimerExpired(idTimer)
+	if (idTimer == g_toggleTimer) then
+		tTimer = "TE"
+		g_toggleTimer = C4:KillTimer(g_toggleTimer)
+	end
+
+	if (idTimer == debug_timer) then
+		Dbg("Debug timer expired: Turning off")
+		debugging = false
+		C4:UpdateProperty("Debug", "Off")
+		debug_timer = C4:KillTimer(debug_timer)
+	end
+end]]></script>
+        <actions>
+            <action>
+                <name>Learn</name>
+                <command>LEARN</command>
+            </action>
+            <action>
+                <name>Delete</name>
+                <command>DELETE</command>
+            </action>
+            <action>
+                <name>Up</name>
+                <command>UP</command>
+            </action>
+            <action>
+                <name>Down</name>
+                <command>DOWN</command>
+            </action>
+            <action>
+                <name>Stop</name>
+                <command>STOP</command>
+            </action>
+        </actions>
+        <properties>
+            <property>
+                <name>Controller MAC Address</name>
+                <type>STRING</type>
+                <readonly>true</readonly>
+                <default />
+            </property>
+            <property>
+                <name>ID</name>
+                <type>RANGED_INTEGER</type>
+                <readonly>false</readonly>
+                <default>1</default>
+                <minimum>0</minimum>
+                <maximum>99</maximum>
+            </property>
+            <property>
+                <name>Channel</name>
+                <type>RANGED_INTEGER</type>
+                <readonly>false</readonly>
+                <default>1</default>
+                <minimum>0</minimum>
+                <maximum>16</maximum>
+            </property>
+            <property>
+                <name>Control Type</name>
+                <type>LIST</type>
+                <readonly>false</readonly>
+                <default>RS-485</default>
+                <items>
+                    <item>A-OK AVT</item>
+                    <item>RS-485</item>
+                </items>
+            </property>
+            <property>
+                <name>Blind Open or Close Time (s)</name>
+                <type>RANGED_INTEGER</type>
+                <readonly>false</readonly>
+                <default>4</default>
+                <minimum>4</minimum>
+                <maximum>60</maximum>
+            </property>
+            <property>
+                <name>House Control</name>
+                <type>LIST</type>
+                <readonly>false</readonly>
+                <default>Off</default>
+                <items>
+                    <item>On</item>
+                    <item>Off</item>
+                </items>
+            </property>
+            <property>
+                <name>Number of Rooms</name>
+                <type>RANGED_INTEGER</type>
+                <readonly>false</readonly>
+                <default>1</default>
+                <minimum>1</minimum>
+                <maximum>99</maximum>
+            </property>
+            <property>
+                <name>Debug</name>
+                <type>LIST</type>
+                <readonly>false</readonly>
+                <default>Off</default>
+                <items>
+                    <item>Off</item>
+                    <item>On</item>
+                </items>
+            </property>
+        </properties>
+    </config>
+    <composer_categories>
+        <category>Motorization</category>
+    </composer_categories>
+    <navigator_categories>
+        <category>Comfort</category>
+    </navigator_categories>
+</devicedata>
